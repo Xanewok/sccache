@@ -188,6 +188,7 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
 }
 
 #[cfg(feature = "dist-server")]
+#[derive(Clone)]
 pub enum ServerHandle {
     Container { cid: String, url: HTTPUrl },
     Process { pid: Pid, url: HTTPUrl },
@@ -201,6 +202,7 @@ pub struct DistSystem {
     scheduler_name: Option<String>,
     server_names: Vec<String>,
     server_pids: Vec<Pid>,
+    servers: Vec<ServerHandle>,
 }
 
 #[cfg(feature = "dist-server")]
@@ -233,6 +235,7 @@ impl DistSystem {
             scheduler_name: None,
             server_names: vec![],
             server_pids: vec![],
+            servers: vec![],
         }
     }
 
@@ -369,6 +372,7 @@ impl DistSystem {
             url,
         };
         self.wait_server_ready(&handle);
+        self.servers.push(handle.clone());
         handle
     }
 
@@ -401,6 +405,7 @@ impl DistSystem {
             HTTPUrl::from_url(reqwest::Url::parse(&format!("https://{}", server_addr)).unwrap());
         let handle = ServerHandle::Process { pid, url };
         self.wait_server_ready(&handle);
+        self.servers.push(handle.clone());
         handle
     }
 
