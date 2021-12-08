@@ -190,13 +190,13 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
 #[cfg(feature = "dist-server")]
 #[derive(Clone)]
 pub enum ServerHandle {
-    Container { cid: String, url: HTTPUrl },
-    Process { pid: Pid, url: HTTPUrl },
+    Container { cid: String, url: reqwest::Url },
+    Process { pid: Pid, url: reqwest::Url },
 }
 
 #[cfg(feature = "dist-server")]
 impl ServerHandle {
-    fn url(&self) -> &HTTPUrl {
+    fn url(&self) -> &reqwest::Url {
         match self {
             ServerHandle::Container { url, .. } => url,
             ServerHandle::Process { url, .. } => url,
@@ -296,14 +296,14 @@ impl DistSystem {
 
         let ip = self.container_ip(&scheduler_name);
         let url = format!("http://{}:{}", ip, SCHEDULER_PORT);
-        let scheduler_url = HTTPUrl::from_url(reqwest::Url::parse(&url).unwrap());
+        let scheduler_url = reqwest::Url::parse(&url).unwrap();
 
         self.scheduler = Some(ServerHandle::Container {
             cid: scheduler_name,
             url: scheduler_url.clone(),
         });
 
-        wait_for_http(scheduler_url, Duration::from_millis(100), MAX_STARTUP_WAIT);
+        wait_for_http(&scheduler_url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
                 let status = self.scheduler_status();
@@ -376,9 +376,7 @@ impl DistSystem {
             .unwrap();
         fs::File::create(format!("{}.ready", server_cfg_path.to_str().unwrap())).unwrap();
 
-        let url = HTTPUrl::from_url(
-            reqwest::Url::parse(&format!("https://{}:{}", server_ip, SERVER_PORT)).unwrap(),
-        );
+        let url = reqwest::Url::parse(&format!("https://{}:{}", server_ip, SERVER_PORT)).unwrap();
         let handle = ServerHandle::Container {
             cid: server_name,
             url,
@@ -397,10 +395,10 @@ impl DistSystem {
             let listener = net::TcpListener::bind(SocketAddr::from((ip, 0))).unwrap();
             listener.local_addr().unwrap()
         };
+        let scheduler = self.scheduler.as_ref().unwrap();
         let token = create_server_token(ServerId::new(server_addr), DIST_SERVER_TOKEN);
         let server =
-            dist::http::Server::new(server_addr, self.scheduler_url().to_url(), token, handler)
-                .unwrap();
+            dist::http::Server::new(server_addr, scheduler.url().clone(), token, handler).unwrap();
         let pid = match unsafe { nix::unistd::fork() }.unwrap() {
             ForkResult::Parent { child } => child,
             ForkResult::Child => {
@@ -410,8 +408,7 @@ impl DistSystem {
             }
         };
 
-        let url =
-            HTTPUrl::from_url(reqwest::Url::parse(&format!("https://{}", server_addr)).unwrap());
+        let url = reqwest::Url::parse(&format!("https://{}", server_addr)).unwrap();
         let handle = ServerHandle::Process { pid, url };
         self.wait_server_ready(&handle);
         self.servers.push(handle.clone());
@@ -436,8 +433,7 @@ impl DistSystem {
     }
 
     pub fn wait_server_ready(&mut self, handle: &ServerHandle) {
-        let url = handle.url().clone();
-        wait_for_http(url, Duration::from_millis(100), MAX_STARTUP_WAIT);
+        wait_for_http(handle.url(), Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
                 let status = self.scheduler_status();
@@ -460,14 +456,13 @@ impl DistSystem {
     }
 
     pub fn scheduler_url(&self) -> HTTPUrl {
-        self.scheduler.as_ref().unwrap().url().clone()
+        HTTPUrl::from_url(self.scheduler.as_ref().unwrap().url().clone())
     }
 
     fn scheduler_status(&self) -> SchedulerStatusResult {
-        let res = reqwest::blocking::get(dist::http::urls::scheduler_status(
-            &self.scheduler_url().to_url(),
-        ))
-        .unwrap();
+        let scheduler = self.scheduler.as_ref().unwrap();
+        let res =
+            reqwest::blocking::get(dist::http::urls::scheduler_status(scheduler.url())).unwrap();
         assert!(res.status().is_success());
         bincode::deserialize_from(res).unwrap()
     }
@@ -643,11 +638,10 @@ fn check_output(output: &Output) {
 }
 
 #[cfg(feature = "dist-server")]
-fn wait_for_http(url: HTTPUrl, interval: Duration, max_wait: Duration) {
+fn wait_for_http(url: &reqwest::Url, interval: Duration, max_wait: Duration) {
     // TODO: after upgrading to reqwest >= 0.9, use 'danger_accept_invalid_certs' and stick with that rather than tcp
     wait_for(
         || {
-            let url = url.to_url();
             let url = url.socket_addrs(|| None).unwrap();
             match net::TcpStream::connect(url.as_slice()) {
                 Ok(_) => Ok(()),
