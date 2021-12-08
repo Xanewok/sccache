@@ -200,9 +200,8 @@ pub struct DistSystem {
     tmpdir: PathBuf,
 
     scheduler_name: Option<String>,
-    server_names: Vec<String>,
-    server_pids: Vec<Pid>,
     servers: Vec<ServerHandle>,
+    scheduler: Option<ServerHandle>,
 }
 
 #[cfg(feature = "dist-server")]
@@ -233,9 +232,8 @@ impl DistSystem {
             tmpdir,
 
             scheduler_name: None,
-            server_names: vec![],
-            server_pids: vec![],
             servers: vec![],
+            scheduler: None,
         }
     }
 
@@ -285,12 +283,12 @@ impl DistSystem {
             ])
             .output()
             .unwrap();
-        self.scheduler_name = Some(scheduler_name);
+        self.scheduler_name = Some(scheduler_name.clone());
 
         check_output(&output);
 
         let scheduler_url = self.scheduler_url();
-        wait_for_http(scheduler_url, Duration::from_millis(100), MAX_STARTUP_WAIT);
+        wait_for_http(scheduler_url.clone(), Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
                 let status = self.scheduler_status();
@@ -310,10 +308,14 @@ impl DistSystem {
             Duration::from_millis(100),
             MAX_STARTUP_WAIT,
         );
+        self.scheduler = Some(ServerHandle::Container {
+            cid: scheduler_name,
+            url: scheduler_url,
+        });
     }
 
     pub fn add_server(&mut self) -> ServerHandle {
-        let server_cfg_relpath = format!("server-cfg-{}.json", self.server_names.len());
+        let server_cfg_relpath = format!("server-cfg-{}.json", self.servers.len());
         let server_cfg_path = self.tmpdir.join(&server_cfg_relpath);
         let server_cfg_container_path = Path::new(CONFIGS_CONTAINER_PATH).join(server_cfg_relpath);
 
@@ -352,7 +354,6 @@ impl DistSystem {
             ])
             .output()
             .unwrap();
-        self.server_names.push(server_name.clone());
 
         check_output(&output);
 
@@ -390,10 +391,7 @@ impl DistSystem {
             dist::http::Server::new(server_addr, self.scheduler_url().to_url(), token, handler)
                 .unwrap();
         let pid = match unsafe { nix::unistd::fork() }.unwrap() {
-            ForkResult::Parent { child } => {
-                self.server_pids.push(child);
-                child
-            }
+            ForkResult::Parent { child } => child,
             ForkResult::Child => {
                 env::set_var("RUST_LOG", "cachepot=trace");
                 env_logger::try_init().unwrap();
@@ -540,7 +538,10 @@ impl Drop for DistSystem {
                 .output()
                 .map(|o| outputs.push((scheduler_name, o))));
         }
-        for server_name in self.server_names.iter() {
+        for server_name in self.servers.iter().filter_map(|s| match s {
+            ServerHandle::Container { cid, .. } => Some(cid),
+            _ => None,
+        }) {
             droperr!(Command::new("docker")
                 .args(&["logs", server_name])
                 .output()
@@ -554,7 +555,10 @@ impl Drop for DistSystem {
                 .output()
                 .map(|o| outputs.push((server_name, o))));
         }
-        for &pid in self.server_pids.iter() {
+        for &pid in self.servers.iter().filter_map(|s| match s {
+            ServerHandle::Process { pid, .. } => Some(pid),
+            _ => None,
+        }) {
             droperr!(nix::sys::signal::kill(pid, Signal::SIGINT));
             thread::sleep(Duration::from_millis(100));
             let mut killagain = true; // Default to trying to kill again, e.g. if there was an error waiting on the pid
