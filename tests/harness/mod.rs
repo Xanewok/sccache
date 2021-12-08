@@ -195,13 +195,22 @@ pub enum ServerHandle {
 }
 
 #[cfg(feature = "dist-server")]
+impl ServerHandle {
+    fn url(&self) -> &HTTPUrl {
+        match self {
+            ServerHandle::Container { url, .. } => url,
+            ServerHandle::Process { url, .. } => url,
+        }
+    }
+}
+
+#[cfg(feature = "dist-server")]
 pub struct DistSystem {
     cachepot_dist: PathBuf,
     tmpdir: PathBuf,
 
-    scheduler_name: Option<String>,
-    servers: Vec<ServerHandle>,
     scheduler: Option<ServerHandle>,
+    servers: Vec<ServerHandle>,
 }
 
 #[cfg(feature = "dist-server")]
@@ -231,7 +240,6 @@ impl DistSystem {
             cachepot_dist: cachepot_dist.to_owned(),
             tmpdir,
 
-            scheduler_name: None,
             servers: vec![],
             scheduler: None,
         }
@@ -283,12 +291,19 @@ impl DistSystem {
             ])
             .output()
             .unwrap();
-        self.scheduler_name = Some(scheduler_name.clone());
 
         check_output(&output);
 
-        let scheduler_url = self.scheduler_url();
-        wait_for_http(scheduler_url.clone(), Duration::from_millis(100), MAX_STARTUP_WAIT);
+        let ip = self.container_ip(&scheduler_name);
+        let url = format!("http://{}:{}", ip, SCHEDULER_PORT);
+        let scheduler_url = HTTPUrl::from_url(reqwest::Url::parse(&url).unwrap());
+
+        self.scheduler = Some(ServerHandle::Container {
+            cid: scheduler_name,
+            url: scheduler_url.clone(),
+        });
+
+        wait_for_http(scheduler_url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
                 let status = self.scheduler_status();
@@ -308,10 +323,6 @@ impl DistSystem {
             Duration::from_millis(100),
             MAX_STARTUP_WAIT,
         );
-        self.scheduler = Some(ServerHandle::Container {
-            cid: scheduler_name,
-            url: scheduler_url,
-        });
     }
 
     pub fn add_server(&mut self) -> ServerHandle {
@@ -425,11 +436,7 @@ impl DistSystem {
     }
 
     pub fn wait_server_ready(&mut self, handle: &ServerHandle) {
-        let url = match handle {
-            ServerHandle::Container { cid: _, url } | ServerHandle::Process { pid: _, url } => {
-                url.clone()
-            }
-        };
+        let url = handle.url().clone();
         wait_for_http(url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
@@ -453,9 +460,7 @@ impl DistSystem {
     }
 
     pub fn scheduler_url(&self) -> HTTPUrl {
-        let ip = self.container_ip(self.scheduler_name.as_ref().unwrap());
-        let url = format!("http://{}:{}", ip, SCHEDULER_PORT);
-        HTTPUrl::from_url(reqwest::Url::parse(&url).unwrap())
+        self.scheduler.as_ref().unwrap().url().clone()
     }
 
     fn scheduler_status(&self) -> SchedulerStatusResult {
@@ -484,12 +489,16 @@ impl DistSystem {
 
     // The interface that the host sees on the docker network (typically 'docker0')
     fn host_interface_ip(&self) -> IpAddr {
+        let scheduler_name = match self.scheduler.as_ref().unwrap() {
+            ServerHandle::Container { cid, .. } => cid,
+            ServerHandle::Process { .. } => unreachable!("We only spawn schedulers via docker"),
+        };
         let output = Command::new("docker")
             .args(&[
                 "inspect",
                 "--format",
                 "{{ .NetworkSettings.Gateway }}",
-                self.scheduler_name.as_ref().unwrap(),
+                scheduler_name,
             ])
             .output()
             .unwrap();
