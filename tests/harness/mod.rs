@@ -401,7 +401,7 @@ impl DistSystem {
     }
 
     pub fn add_server(&mut self) -> Arc<ServerHandle> {
-        let server_cfg_relpath = format!("server-cfg-{}.json", self.servers_names.len());
+        let server_cfg_relpath = format!("server-cfg-{}.json", self.server_names.len());
         let server_cfg_path = self.tmpdir.join(&server_cfg_relpath);
         let server_cfg_container_path = Path::new(CONFIGS_CONTAINER_PATH).join(server_cfg_relpath);
 
