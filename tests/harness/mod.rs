@@ -524,36 +524,24 @@ impl Drop for DistSystem {
         let mut outputs = vec![];
         let mut exits = vec![];
 
-        if let Some(scheduler_name) = self.scheduler_name.as_ref() {
-            droperr!(Command::new("docker")
-                .args(&["logs", scheduler_name])
-                .output()
-                .map(|o| logs.push((scheduler_name, o))));
-            droperr!(Command::new("docker")
-                .args(&["kill", scheduler_name])
-                .output()
-                .map(|o| outputs.push((scheduler_name, o))));
-            droperr!(Command::new("docker")
-                .args(&["rm", "-f", scheduler_name])
-                .output()
-                .map(|o| outputs.push((scheduler_name, o))));
-        }
-        for server_name in self.servers.iter().filter_map(|s| match s {
+        let handles = self.scheduler.iter().chain(self.servers.iter());
+        let container_names = handles.filter_map(|s| match s {
             ServerHandle::Container { cid, .. } => Some(cid),
             _ => None,
-        }) {
+        });
+        for container_name in container_names {
             droperr!(Command::new("docker")
-                .args(&["logs", server_name])
+                .args(&["logs", container_name])
                 .output()
-                .map(|o| logs.push((server_name, o))));
+                .map(|o| logs.push((container_name, o))));
             droperr!(Command::new("docker")
-                .args(&["kill", server_name])
+                .args(&["kill", container_name])
                 .output()
-                .map(|o| outputs.push((server_name, o))));
+                .map(|o| outputs.push((container_name, o))));
             droperr!(Command::new("docker")
-                .args(&["rm", "-f", server_name])
+                .args(&["rm", "-f", container_name])
                 .output()
-                .map(|o| outputs.push((server_name, o))));
+                .map(|o| outputs.push((container_name, o))));
         }
         for &pid in self.servers.iter().filter_map(|s| match s {
             ServerHandle::Process { pid, .. } => Some(pid),
